@@ -174,7 +174,11 @@ impl PdfViewer {
             if let Some((width, height, should_rebuild)) = self.get_render_info() {
                 if let Some(surface) = &mut self.surface {
                     if let Ok(data) = surface.data() {
-                        let bytes = data.to_vec();
+                        let mut bytes = data.to_vec();
+                        // Cairo ARGB32 (ABGR) -> RGBA: swap R and B channels
+                        for chunk in bytes.chunks_mut(4) {
+                            chunk.swap(0, 2);
+                        }
                         let image =
                             egui::ColorImage::from_rgba_unmultiplied([width, height], &bytes);
 
