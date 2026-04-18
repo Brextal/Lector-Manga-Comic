@@ -1,6 +1,6 @@
 # Lector Manga/Comic
 
-Un lector de PDFs y cómics construido con Rust yegui, diseñado para lectura de manga y comics en Linux.
+Un lector de PDFs y cómics construido con Rust y el framework eframe/egui, diseñado para lectura de manga y comics en Linux.
 
 ![Lector Manga/Comic](icons/lector.png)
 
