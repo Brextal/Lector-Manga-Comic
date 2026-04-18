@@ -36,7 +36,8 @@ impl eframe::App for App {
                 };
 
                 if needs_load && !selected.is_empty() {
-                    let file_path = format!("file://{}", selected);
+                    let escaped_path = selected.replace('#', "%23");
+                    let file_path = format!("file://{}", escaped_path);
                     if let Some(mut viewer) = PdfViewer::new(&file_path) {
                         if let Some(file_state) = self.app_state.get_file_state(&selected) {
                             viewer.set_page(file_state.page);
