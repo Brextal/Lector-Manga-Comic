@@ -34,8 +34,9 @@ impl PdfViewer {
 
     pub fn render_page(&mut self) {
         if let Some(page) = self.doc.page(self.page_num) {
-            let base_w = 800;
-            let base_h = 1200;
+            let (page_w, page_h) = page.size();
+            let base_w = page_w as i32;
+            let base_h = page_h as i32;
 
             let zoom_capped = self.zoom.min(4.0);
             let render_w = (base_w as f32 * zoom_capped) as i32;
