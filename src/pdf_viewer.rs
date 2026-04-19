@@ -170,31 +170,32 @@ impl PdfViewer {
 
         ui.separator();
 
-        egui::ScrollArea::new([true, true]).show(ui, |ui: &mut egui::Ui| {
-            if let Some((width, height, should_rebuild)) = self.get_render_info() {
-                if let Some(surface) = &mut self.surface {
-                    if let Ok(data) = surface.data() {
-                        let mut bytes = data.to_vec();
-                        // Cairo ARGB32 (ABGR) -> RGBA: swap R and B channels
-                        for chunk in bytes.chunks_mut(4) {
-                            chunk.swap(0, 2);
-                        }
-                        let image =
-                            egui::ColorImage::from_rgba_unmultiplied([width, height], &bytes);
+        let render_info = self.get_render_info();
 
-                        if should_rebuild {
-                            self.texture =
-                                Some(ctx.load_texture("page", image, Default::default()));
-                        }
+        let (dims, should_rebuild) = match render_info {
+            Some((w, h, r)) => ((w, h), r),
+            None => ((800, 1200), false),
+        };
 
-                        let size = egui::vec2(width as f32, height as f32);
-
-                        ui.set_min_size(size);
-                        if let Some(ref texture) = self.texture {
-                            ui.add(egui::Image::new(texture).max_size(size));
-                        }
+        if should_rebuild {
+            if let Some(surface) = &mut self.surface {
+                if let Ok(data) = surface.data() {
+                    let mut bytes = data.to_vec();
+                    for chunk in bytes.chunks_mut(4) {
+                        chunk.swap(0, 2);
                     }
+                    let image = egui::ColorImage::from_rgba_unmultiplied([dims.0, dims.1], &bytes);
+                    self.texture = Some(ctx.load_texture("page", image, Default::default()));
                 }
+            }
+        }
+
+        let scroll_size = egui::vec2(dims.0 as f32, dims.1 as f32);
+
+        egui::ScrollArea::new([true, true]).show(ui, |ui: &mut egui::Ui| {
+            ui.set_min_size(scroll_size);
+            if let Some(ref texture) = self.texture {
+                ui.add(egui::Image::new(texture).max_size(scroll_size));
             }
         });
 

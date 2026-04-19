@@ -100,3 +100,4 @@ fn main() {
     let options = eframe::NativeOptions::default();
     let _ = eframe::run_native("Lector PDF", options, Box::new(|_cc| Box::new(App::new())));
 }
+
