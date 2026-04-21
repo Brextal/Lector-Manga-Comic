@@ -1,27 +1,58 @@
 use eframe::egui;
-use lector_pdf::{app_state::AppState, file_browser::FileBrowser, pdf_viewer::PdfViewer};
+use lector_pdf::{
+    app_state::AppState,
+    comic_viewer::ComicViewer,
+    file_browser::FileBrowser,
+    pdf_viewer::PdfViewer,
+    viewer::{detect_format, Format, Viewer},
+};
 use std::time::{Duration, Instant};
 
 struct App {
     file_browser: FileBrowser,
-    pdf_viewer: Option<PdfViewer>,
+    viewer: Option<Box<dyn Viewer>>,
     app_state: AppState,
     current_file: Option<String>,
     last_save_time: Instant,
     last_saved_page: Option<i32>,
     last_saved_zoom: Option<f32>,
+    open_error: Option<String>,
 }
 
 impl App {
     fn new() -> Self {
         Self {
             file_browser: FileBrowser::new(),
-            pdf_viewer: None,
+            viewer: None,
             app_state: AppState::new(),
             current_file: None,
             last_save_time: Instant::now(),
             last_saved_page: None,
             last_saved_zoom: None,
+            open_error: None,
+        }
+    }
+
+    fn escape_path(path: &str) -> String {
+        if !path.contains('%') {
+            return path.to_string();
+        }
+        path.replace("%23", "#")
+            .replace("%28", "(")
+            .replace("%29", ")")
+            .replace("%20", " ")
+    }
+
+    fn create_viewer(file_path: &str) -> Option<Box<dyn Viewer>> {
+        let format = detect_format(file_path);
+
+        match format {
+            Some(Format::Pdf) => PdfViewer::new(file_path).map(|v| Box::new(v) as Box<dyn Viewer>),
+            Some(Format::Cbz) | Some(Format::Cbr) => {
+                let escaped_path = Self::escape_path(file_path);
+                ComicViewer::new(&escaped_path).map(|v| Box::new(v) as Box<dyn Viewer>)
+            }
+            None => None,
         }
     }
 }
@@ -36,22 +67,29 @@ impl eframe::App for App {
                 };
 
                 if needs_load && !selected.is_empty() {
-                    let escaped_path = selected.replace('#', "%23");
-                    let file_path = format!("file://{}", escaped_path);
-                    if let Some(mut viewer) = PdfViewer::new(&file_path) {
+                    self.open_error = None;
+
+                    let format = detect_format(&selected);
+                    if format.is_none() {
+                        self.open_error = Some(format!("Formato no soportado: {}", selected));
+                    } else if let Some(mut viewer) = Self::create_viewer(&selected) {
                         if let Some(file_state) = self.app_state.get_file_state(&selected) {
                             viewer.set_page(file_state.page);
                             viewer.set_zoom(file_state.zoom);
                             self.last_saved_page = Some(file_state.page);
                             self.last_saved_zoom = Some(file_state.zoom);
                         }
-                        self.pdf_viewer = Some(viewer);
+                        self.viewer = Some(viewer);
                         self.current_file = Some(selected.to_string());
+                    } else {
+                        self.open_error = Some(
+                            "Error al abrir el archivo. Puede estar corrupto o vacío.".to_string(),
+                        );
                     }
                 }
 
-                if let Some(ref mut viewer) = self.pdf_viewer {
-                    let current_page = viewer.get_page();
+                if let Some(ref mut viewer) = self.viewer {
+                    let current_page = viewer.current_page();
                     let current_zoom = viewer.get_zoom();
 
                     let page_changed = self.last_saved_page != Some(current_page);
@@ -79,13 +117,18 @@ impl eframe::App for App {
                     let go_back = viewer.render(ctx, ui);
 
                     if go_back || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        self.pdf_viewer = None;
+                        self.viewer = None;
                         self.current_file = None;
                         self.file_browser.clear_selection();
                     }
                 } else {
-                    ui.label("Error al cargar el PDF");
+                    if let Some(ref err) = self.open_error {
+                        ui.label(err);
+                    } else {
+                        ui.label("Error al cargar el archivo");
+                    }
                     if ui.button("Volver").clicked() {
+                        self.open_error = None;
                         self.file_browser.clear_selection();
                     }
                 }
@@ -100,4 +143,3 @@ fn main() {
     let options = eframe::NativeOptions::default();
     let _ = eframe::run_native("Lector PDF", options, Box::new(|_cc| Box::new(App::new())));
 }
-

@@ -3,6 +3,7 @@ use eframe::egui;
 pub struct FileBrowser {
     current_path: std::path::PathBuf,
     selected_file: Option<String>,
+    path_input: String,
 }
 
 impl FileBrowser {
@@ -10,6 +11,7 @@ impl FileBrowser {
         Self {
             current_path: dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
             selected_file: None,
+            path_input: String::new(),
         }
     }
 
@@ -39,6 +41,16 @@ impl FileBrowser {
         self.selected_file = None;
     }
 
+    pub fn go_to_path(&mut self, path: String) {
+        let path_buf = std::path::PathBuf::from(&path);
+        if path_buf.is_dir() {
+            self.current_path = path_buf;
+            self.selected_file = None;
+        } else if path_buf.is_file() {
+            self.selected_file = Some(path);
+        }
+    }
+
     fn get_entries(&self) -> Vec<FileEntry> {
         let mut entries = Vec::new();
 
@@ -52,10 +64,27 @@ impl FileBrowser {
                 }
 
                 let is_dir = path.is_dir();
-                let is_pdf = name.to_lowercase().ends_with(".pdf");
+                let lower = name.to_lowercase();
+                let is_pdf = lower.ends_with(".pdf");
+                let is_cbz = lower.ends_with(".cbz") || lower.ends_with(".zip");
+                let is_cbr = lower.ends_with(".cbr") || lower.ends_with(".rar");
 
-                if is_dir || is_pdf {
-                    entries.push(FileEntry { name, is_dir, path });
+                if is_dir || is_pdf || is_cbz || is_cbr {
+                    let file_type = if is_dir {
+                        "DIR"
+                    } else if is_pdf {
+                        "PDF"
+                    } else if is_cbz {
+                        "CBZ"
+                    } else {
+                        "CBR"
+                    };
+                    entries.push(FileEntry {
+                        name,
+                        is_dir,
+                        path,
+                        file_type: file_type.to_string(),
+                    });
                 }
             }
         }
@@ -81,13 +110,30 @@ impl FileBrowser {
             ui.label(&self.current_path.display().to_string());
         });
 
+        ui.horizontal(|ui| {
+            let response =
+                ui.add(egui::TextEdit::singleline(&mut self.path_input).desired_width(300.0));
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if !self.path_input.is_empty() {
+                    self.go_to_path(self.path_input.clone());
+                    self.path_input.clear();
+                }
+            }
+            if ui.button("Ir").clicked() {
+                if !self.path_input.is_empty() {
+                    self.go_to_path(self.path_input.clone());
+                    self.path_input.clear();
+                }
+            }
+        });
+
         ui.separator();
 
         let entries = self.get_entries();
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             for file in entries {
-                let icon = if file.is_dir { "[DIR]" } else { "[PDF]" };
+                let icon = format!("[{}]", file.file_type);
                 let button = egui::Button::new(format!("{} {}", icon, file.name));
 
                 if ui.add(button).clicked() {
@@ -112,5 +158,5 @@ pub struct FileEntry {
     pub name: String,
     pub is_dir: bool,
     pub path: std::path::PathBuf,
+    pub file_type: String,
 }
-

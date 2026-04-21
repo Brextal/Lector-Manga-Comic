@@ -2,93 +2,143 @@ use cairo::{Context, Format, ImageSurface};
 use eframe::egui;
 use poppler::Document;
 
+use crate::viewer::Viewer;
+
 pub struct PdfViewer {
     doc: Document,
     page_num: i32,
-    surface: Option<ImageSurface>,
     zoom: f32,
+    surface: Option<ImageSurface>,
     texture: Option<egui::TextureHandle>,
     last_render_size: Option<(i32, i32)>,
+    file_path: String,
+    file_name: String,
+    pending_page: i32,
+    pending_zoom: f32,
+    is_dirty: bool,
+    error_message: Option<String>,
 }
 
 impl PdfViewer {
     pub fn new(file_path: &str) -> Option<Self> {
-        let doc = Document::from_file(file_path, None).ok()?;
+        let file_uri = if file_path.starts_with("file://") {
+            file_path.to_string()
+        } else {
+            format!("file://{}", file_path)
+        };
+
+        let doc = Document::from_file(&file_uri, None).ok()?;
 
         if doc.n_pages() == 0 {
             return None;
         }
 
+        let file_path_str = if file_path.starts_with("file://") {
+            file_path
+                .strip_prefix("file://")
+                .unwrap_or(file_path)
+                .to_string()
+        } else {
+            file_path.to_string()
+        };
+
+        let file_name = std::path::Path::new(&file_path_str)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+
         let mut viewer = Self {
             doc,
             page_num: 0,
-            surface: None,
             zoom: 1.0,
+            surface: None,
             texture: None,
             last_render_size: None,
+            file_path: file_path_str,
+            file_name,
+            pending_page: 0,
+            pending_zoom: 1.0,
+            is_dirty: true,
+            error_message: None,
         };
 
-        viewer.render_page();
+        viewer.render_page_sync();
         Some(viewer)
     }
 
-    pub fn render_page(&mut self) {
-        if let Some(page) = self.doc.page(self.page_num) {
-            let (page_w, page_h) = page.size();
-            let base_w = page_w as i32;
-            let base_h = page_h as i32;
-
-            let zoom_capped = self.zoom.min(4.0);
-            let render_w = (base_w as f32 * zoom_capped) as i32;
-            let render_h = (base_h as f32 * zoom_capped) as i32;
-
-            let surface = match ImageSurface::create(Format::ARgb32, render_w, render_h) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("Error al crear superficie: {}", e);
-                    return;
-                }
-            };
-
-            let cr = match Context::new(&surface) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("Error al crear contexto: {}", e);
-                    return;
-                }
-            };
-
-            cr.scale(zoom_capped as f64, zoom_capped as f64);
-            page.render(&cr);
-
-            self.surface = Some(surface);
-            self.texture = None;
-            self.last_render_size = Some((render_w, render_h));
+    fn render_page_sync(&mut self) {
+        if !self.is_dirty {
+            self.error_message = None;
+            return;
         }
+
+        let page = match self.doc.page(self.pending_page) {
+            Some(p) => p,
+            None => {
+                self.error_message = Some("Página no encontrada".to_string());
+                return;
+            }
+        };
+
+        let (page_w, page_h) = page.size();
+        let zoom_capped = self.pending_zoom.min(4.0);
+        let render_w = (page_w as f32 * zoom_capped) as i32;
+        let render_h = (page_h as f32 * zoom_capped) as i32;
+
+        let surface = match ImageSurface::create(Format::ARgb32, render_w, render_h) {
+            Ok(s) => s,
+            Err(e) => {
+                self.error_message = Some(format!("Error al crear superficie: {}", e));
+                return;
+            }
+        };
+
+        let cr = match Context::new(&surface) {
+            Ok(c) => c,
+            Err(e) => {
+                self.error_message = Some(format!("Error al crear contexto: {}", e));
+                return;
+            }
+        };
+
+        cr.scale(zoom_capped as f64, zoom_capped as f64);
+        page.render(&cr);
+
+        self.surface = Some(surface);
+        self.texture = None;
+        self.last_render_size = Some((render_w, render_h));
+        self.is_dirty = false;
+        self.error_message = None;
     }
 
     pub fn next_page(&mut self) {
         if self.page_num < self.doc.n_pages() - 1 {
             self.page_num += 1;
-            self.render_page();
+            self.pending_page = self.page_num;
+            self.pending_zoom = self.zoom;
+            self.is_dirty = true;
         }
     }
 
     pub fn prev_page(&mut self) {
         if self.page_num > 0 {
             self.page_num -= 1;
-            self.render_page();
+            self.pending_page = self.page_num;
+            self.pending_zoom = self.zoom;
+            self.is_dirty = true;
         }
     }
 
     pub fn zoom_in(&mut self) {
         self.zoom = (self.zoom + 0.25).min(4.0);
-        self.render_page();
+        self.pending_zoom = self.zoom;
+        self.is_dirty = true;
     }
 
     pub fn zoom_out(&mut self) {
         self.zoom = (self.zoom - 0.25).max(0.25);
-        self.render_page();
+        self.pending_zoom = self.zoom;
+        self.is_dirty = true;
     }
 
     pub fn current_page(&self) -> i32 {
@@ -103,10 +153,6 @@ impl PdfViewer {
         (self.zoom * 100.0) as i32
     }
 
-    pub fn get_page(&self) -> i32 {
-        self.page_num
-    }
-
     pub fn get_zoom(&self) -> f32 {
         self.zoom
     }
@@ -114,13 +160,15 @@ impl PdfViewer {
     pub fn set_page(&mut self, page: i32) {
         if page >= 0 && page < self.doc.n_pages() {
             self.page_num = page;
-            self.render_page();
+            self.pending_page = page;
+            self.is_dirty = true;
         }
     }
 
     pub fn set_zoom(&mut self, zoom: f32) {
         self.zoom = zoom.clamp(0.25, 4.0);
-        self.render_page();
+        self.pending_zoom = self.zoom;
+        self.is_dirty = true;
     }
 
     fn get_render_info(&self) -> Option<(usize, usize, bool)> {
@@ -171,6 +219,8 @@ impl PdfViewer {
 
         ui.separator();
 
+        self.render_page_sync();
+
         let render_info = self.get_render_info();
 
         let (dims, should_rebuild) = match render_info {
@@ -178,7 +228,7 @@ impl PdfViewer {
             None => ((800, 1200), false),
         };
 
-        if should_rebuild {
+        if should_rebuild && !self.is_dirty {
             if let Some(surface) = &mut self.surface {
                 if let Ok(data) = surface.data() {
                     let mut bytes = data.to_vec();
@@ -193,12 +243,17 @@ impl PdfViewer {
 
         let scroll_size = egui::vec2(dims.0 as f32, dims.1 as f32);
 
-        egui::ScrollArea::new([true, true]).show(ui, |ui: &mut egui::Ui| {
-            ui.set_min_size(scroll_size);
-            if let Some(ref texture) = self.texture {
+        if let Some(ref texture) = self.texture {
+            egui::ScrollArea::new([true, true]).show(ui, |ui: &mut egui::Ui| {
+                ui.set_min_size(scroll_size);
                 ui.add(egui::Image::new(texture).max_size(scroll_size));
-            }
-        });
+            });
+        } else if let Some(ref err) = self.error_message {
+            ui.label(err);
+        } else if self.is_dirty {
+            ui.spinner();
+            ui.label("Cargando...");
+        }
 
         if ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
             self.prev_page();
@@ -215,6 +270,52 @@ impl PdfViewer {
             self.zoom_out();
         }
 
+        if ui.input(|i| i.key_pressed(egui::Key::Q)) {
+            go_back = true;
+        }
+
         go_back
+    }
+}
+
+impl Viewer for PdfViewer {
+    fn next_page(&mut self) {
+        self.next_page();
+    }
+    fn prev_page(&mut self) {
+        self.prev_page();
+    }
+    fn set_page(&mut self, page: i32) {
+        self.set_page(page);
+    }
+    fn current_page(&self) -> i32 {
+        self.page_num
+    }
+    fn total_pages(&self) -> i32 {
+        self.doc.n_pages()
+    }
+    fn zoom_in(&mut self) {
+        self.zoom_in();
+    }
+    fn zoom_out(&mut self) {
+        self.zoom_out();
+    }
+    fn set_zoom(&mut self, zoom: f32) {
+        self.set_zoom(zoom);
+    }
+    fn get_zoom(&self) -> f32 {
+        self.zoom
+    }
+    fn zoom_percent(&self) -> i32 {
+        (self.zoom * 100.0) as i32
+    }
+    fn render(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) -> bool {
+        self.render(ctx, ui)
+    }
+    fn get_file_path(&self) -> &str {
+        &self.file_path
+    }
+    fn get_file_name(&self) -> &str {
+        &self.file_name
     }
 }

@@ -39,6 +39,10 @@ impl AppState {
         }
 
         state
+            .file_states
+            .retain(|path, _| std::path::Path::new(path).exists());
+
+        state
     }
 
     pub fn save(&self) {
@@ -47,16 +51,16 @@ impl AppState {
             .join("lector-pdf");
 
         let state_file = state_dir.join("state.json");
+        let temp_file = state_dir.join("state.json.tmp");
 
         if let Ok(content) = serde_json::to_string_pretty(self) {
-            fs::write(&state_file, content).ok();
+            if fs::write(&temp_file, content).is_ok() {
+                let _ = fs::rename(&temp_file, &state_file);
+            }
         }
     }
 
     pub fn get_file_state(&self, file: &str) -> Option<&FileState> {
-        if file.contains("..") || (file.starts_with('/') && !file.starts_with("/home")) {
-            return None;
-        }
         self.file_states.get(file)
     }
 
@@ -68,9 +72,5 @@ impl AppState {
             .insert(file.clone(), FileState { page, zoom });
         self.last_opened = Some(file);
         self.save();
-    }
-
-    pub fn get_last_opened(&self) -> Option<&str> {
-        self.last_opened.as_deref()
     }
 }
