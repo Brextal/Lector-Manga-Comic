@@ -2,6 +2,7 @@ use eframe::egui;
 use lector_pdf::{
     app_state::AppState,
     comic_viewer::ComicViewer,
+    cbr_viewer::CbrViewer,
     file_browser::FileBrowser,
     pdf_viewer::PdfViewer,
     viewer::{detect_format, Format, Viewer},
@@ -33,24 +34,23 @@ impl App {
         }
     }
 
-    fn escape_path(path: &str) -> String {
-        if !path.contains('%') {
-            return path.to_string();
-        }
-        path.replace("%23", "#")
-            .replace("%28", "(")
-            .replace("%29", ")")
-            .replace("%20", " ")
-    }
-
     fn create_viewer(file_path: &str) -> Option<Box<dyn Viewer>> {
-        let format = detect_format(file_path);
+        // Clean file:// prefix if present
+        let clean_path = if file_path.starts_with("file://") {
+            file_path.strip_prefix("file://").unwrap_or(file_path)
+        } else {
+            file_path
+        };
+
+        let format = detect_format(clean_path);
 
         match format {
-            Some(Format::Pdf) => PdfViewer::new(file_path).map(|v| Box::new(v) as Box<dyn Viewer>),
-            Some(Format::Cbz) | Some(Format::Cbr) => {
-                let escaped_path = Self::escape_path(file_path);
-                ComicViewer::new(&escaped_path).map(|v| Box::new(v) as Box<dyn Viewer>)
+            Some(Format::Pdf) => PdfViewer::new(clean_path).map(|v| Box::new(v) as Box<dyn Viewer>),
+            Some(Format::Cbz) => {
+                ComicViewer::new(clean_path).map(|v| Box::new(v) as Box<dyn Viewer>)
+            }
+            Some(Format::Cbr) => {
+                CbrViewer::new(clean_path).map(|v| Box::new(v) as Box<dyn Viewer>)
             }
             None => None,
         }
@@ -69,10 +69,7 @@ impl eframe::App for App {
                 if needs_load && !selected.is_empty() {
                     self.open_error = None;
 
-                    let format = detect_format(&selected);
-                    if format.is_none() {
-                        self.open_error = Some(format!("Formato no soportado: {}", selected));
-                    } else if let Some(mut viewer) = Self::create_viewer(&selected) {
+                    if let Some(mut viewer) = Self::create_viewer(&selected) {
                         if let Some(file_state) = self.app_state.get_file_state(&selected) {
                             viewer.set_page(file_state.page);
                             viewer.set_zoom(file_state.zoom);

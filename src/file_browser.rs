@@ -4,6 +4,7 @@ pub struct FileBrowser {
     current_path: std::path::PathBuf,
     selected_file: Option<String>,
     path_input: String,
+    highlighted_index: Option<usize>,
 }
 
 impl FileBrowser {
@@ -12,13 +13,18 @@ impl FileBrowser {
             current_path: dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
             selected_file: None,
             path_input: String::new(),
+            highlighted_index: None,
         }
     }
 
     pub fn go_up(&mut self) {
+        let limit = std::path::Path::new("/home/brextal/");
         if let Some(parent) = self.current_path.parent() {
-            self.current_path = parent.to_path_buf();
-            self.selected_file = None;
+            // Check if parent is still within the limit
+            if parent.starts_with(limit) || parent == std::path::Path::new("/") {
+                self.current_path = parent.to_path_buf();
+                self.selected_file = None;
+            }
         }
     }
 
@@ -39,6 +45,7 @@ impl FileBrowser {
 
     pub fn clear_selection(&mut self) {
         self.selected_file = None;
+        self.highlighted_index = None;
     }
 
     pub fn go_to_path(&mut self, path: String) {
@@ -103,6 +110,11 @@ impl FileBrowser {
     }
 
     pub fn render(&mut self, ui: &mut egui::Ui) {
+        // Handle backspace to go up a directory
+        if ui.input(|i| i.key_pressed(egui::Key::Backspace)) {
+            self.go_up();
+        }
+
         ui.horizontal(|ui| {
             if ui.button("^").clicked() {
                 self.go_up();
@@ -130,15 +142,64 @@ impl FileBrowser {
         ui.separator();
 
         let entries = self.get_entries();
+        let mut triggered_click = false;
+
+        // Handle keyboard navigation
+        if !entries.is_empty() {
+            let max_index = entries.len() - 1;
+
+            if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                self.highlighted_index = match self.highlighted_index {
+                    Some(idx) if idx < max_index => Some(idx + 1),
+                    Some(idx) => Some(idx),
+                    None => Some(0),
+                };
+            }
+
+            if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                self.highlighted_index = match self.highlighted_index {
+                    Some(idx) if idx > 0 => Some(idx - 1),
+                    Some(idx) => Some(idx),
+                    None => Some(0),
+                };
+            }
+
+            // Handle Enter key for selected entry
+            if let Some(idx) = self.highlighted_index {
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    if let Some(entry) = entries.get(idx) {
+                        if entry.is_dir {
+                            self.go_to(entry.path.clone());
+                            self.highlighted_index = None;
+                        } else {
+                            self.select_file(entry.path.to_string_lossy().to_string());
+                            triggered_click = true;
+                        }
+                    }
+                }
+            }
+        } else {
+            self.highlighted_index = None;
+        }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for file in entries {
+            for (i, file) in entries.iter().enumerate() {
                 let icon = format!("[{}]", file.file_type);
-                let button = egui::Button::new(format!("{} {}", icon, file.name));
+                let is_highlighted = self.highlighted_index == Some(i);
 
-                if ui.add(button).clicked() {
+                let mut button = egui::Button::new(format!("{} {}", icon, file.name));
+
+                // Highlight the current entry
+                if is_highlighted {
+                    button = button.fill(egui::Color32::from_gray(80));
+                }
+
+                let clicked = ui.add(button).clicked();
+
+                if clicked || (is_highlighted && triggered_click) {
                     if file.is_dir {
-                        self.go_to(file.path);
+                        self.go_to(file.path.clone());
+                        self.highlighted_index = None;
                     } else {
                         self.select_file(file.path.to_string_lossy().to_string());
                     }

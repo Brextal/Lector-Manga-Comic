@@ -1,10 +1,9 @@
 use eframe::egui;
 use image::GenericImageView;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
-use zip::ZipArchive;
+use std::fs;
+use std::path::{Path, PathBuf};
+use unrar::Archive;
 
 use crate::viewer::Viewer;
 
@@ -12,49 +11,61 @@ const SUPPORTED_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bm
 const CACHE_WINDOW: i32 = 2;
 const PRELOAD_OFFSETS: &[i32] = &[-1, 1];
 
-pub struct ComicViewer {
+pub struct CbrViewer {
     page_num: i32,
     total_pages: i32,
-    page_names: Vec<String>,
+    page_paths: Vec<String>,
     zoom: f32,
     file_path: String,
     file_name: String,
     texture_cache: HashMap<i32, (egui::TextureHandle, (usize, usize))>,
-    archive: Option<ZipArchive<File>>,
     error_message: Option<String>,
     page_input: String,
+    temp_dir: PathBuf,
 }
 
-impl ComicViewer {
+impl CbrViewer {
     pub fn new(file_path: &str) -> Option<Self> {
-        let file_path_str = Path::new(file_path);
-        let file_name = file_path_str
+        let file_name = Path::new(file_path)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "Unknown".to_string());
 
-        let page_names = Self::list_zip_contents(file_path)?;
+        // Create unique temp directory based on full path hash to avoid collisions
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        file_path.hash(&mut hasher);
+        let path_hash = hasher.finish();
 
-        if page_names.is_empty() {
+        let temp_dir = std::env::temp_dir()
+            .join("lector-manga-comic")
+            .join(format!("{}", path_hash));
+
+        let _ = fs::create_dir_all(&temp_dir);
+
+        // Clean any existing files in temp dir
+        if temp_dir.exists() {
+            let _ = fs::remove_dir_all(&temp_dir);
+        }
+        let _ = fs::create_dir_all(&temp_dir);
+
+        // Extrae todas las páginas al inicio
+        let page_paths = Self::extract_all_pages(file_path, temp_dir.to_str().unwrap())?;
+        if page_paths.is_empty() {
             return None;
         }
 
-        let total_pages = page_names.len() as i32;
-
-        let file = File::open(file_path).ok()?;
-        let archive = ZipArchive::new(file).ok()?;
-
         Some(Self {
             page_num: 0,
-            total_pages,
-            page_names,
+            total_pages: page_paths.len() as i32,
+            page_paths,
             zoom: 1.0,
             file_path: file_path.to_string(),
             file_name,
             texture_cache: HashMap::new(),
-            archive: Some(archive),
             error_message: None,
             page_input: String::new(),
+            temp_dir,
         })
     }
 
@@ -63,50 +74,27 @@ impl ComicViewer {
         SUPPORTED_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
     }
 
-    fn extract_page_number(name: &str) -> Option<u32> {
-        let name_lower = name.to_lowercase();
-        let nums: Vec<u32> = name_lower
-            .chars()
-            .collect::<Vec<_>>()
-            .split(|c| !c.is_ascii_digit())
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| s.iter().collect::<String>().parse().ok())
-            .collect();
+    fn extract_all_pages(file_path: &str, temp_dir: &str) -> Option<Vec<String>> {
+        let mut archive = Archive::new(file_path.to_string())
+            .extract_to(temp_dir.to_string())
+            .ok()?;
+        archive.process().ok()?;
 
-        nums.last().copied()
-    }
-
-    fn natural_sort_key(name: &str) -> (Option<u32>, String) {
-        (Self::extract_page_number(name), name.to_lowercase())
-    }
-
-    fn list_zip_contents(file_path: &str) -> Option<Vec<String>> {
-        let file = File::open(file_path).ok()?;
-        let mut archive = zip::ZipArchive::new(file).ok()?;
-
-        let mut page_names: Vec<String> = (0..archive.len())
-            .filter_map(|i| {
-                let name = archive.by_index(i).ok()?.name().to_string();
+        let mut pages = Vec::new();
+        for entry in fs::read_dir(temp_dir).ok()? {
+            let path = entry.ok()?.path();
+            if let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) {
                 if Self::is_image_file(&name) {
-                    Some(name)
-                } else {
-                    None
+                    pages.push(path.to_string_lossy().to_string());
                 }
-            })
-            .filter(|name| !name.starts_with("__MACOSX"))
-            .collect();
-
-        page_names.sort_by(|a, b| Self::natural_sort_key(a).cmp(&Self::natural_sort_key(b)));
-
-        Some(page_names)
+            }
+        }
+        pages.sort();
+        Some(pages)
     }
 
-    fn read_page_from_zip(&mut self, page_name: &str) -> Option<Vec<u8>> {
-        let archive = self.archive.as_mut()?;
-        let mut zip_file = archive.by_name(page_name).ok()?;
-        let mut data = Vec::new();
-        zip_file.read_to_end(&mut data).ok()?;
-        Some(data)
+    fn read_page(&self, page_path: &str) -> Option<Vec<u8>> {
+        fs::read(page_path).ok()
     }
 
     fn ensure_texture_loaded(&mut self, ctx: &egui::Context, page_idx: i32) {
@@ -117,18 +105,18 @@ impl ComicViewer {
             return;
         }
 
-        let page_name = match self.page_names.get(page_idx as usize) {
-            Some(n) => n.clone(),
+        let page_path = match self.page_paths.get(page_idx as usize) {
+            Some(p) => p.clone(),
             None => {
                 self.error_message = Some(format!("Página {} no encontrada", page_idx));
                 return;
             }
         };
 
-        let data = match self.read_page_from_zip(&page_name) {
+        let data = match self.read_page(&page_path) {
             Some(d) => d,
             None => {
-                self.error_message = Some(format!("No se pudo leer: {}", page_name));
+                self.error_message = Some(format!("No se pudo leer: {}", page_path));
                 return;
             }
         };
@@ -142,17 +130,14 @@ impl ComicViewer {
         };
 
         let (w, h) = img.dimensions();
-        let w_usize = w as usize;
-        let h_usize = h as usize;
         let rgba = img.to_rgba8();
         let bytes = rgba.into_raw();
-        let color_image = egui::ColorImage::from_rgba_unmultiplied([w_usize, h_usize], &bytes);
+        let color_image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &bytes);
 
         let key = format!("page_{}", page_idx);
         let texture = ctx.load_texture(&key, color_image, Default::default());
 
-        self.texture_cache
-            .insert(page_idx, (texture, (w_usize, h_usize)));
+        self.texture_cache.insert(page_idx, (texture, (w as usize, h as usize)));
         self.error_message = None;
     }
 
@@ -164,23 +149,23 @@ impl ComicViewer {
             .retain(|page, _| *page >= min_page && *page <= max_page);
     }
 
-    fn preload_neighbor_pages(
-        &mut self,
-        ctx: &egui::Context,
-        current_page: i32,
-    ) {
-        let total = self.total_pages;
-
+    fn preload_neighbor_pages(&mut self, ctx: &egui::Context, current_page: i32) {
         for &offset in PRELOAD_OFFSETS {
             let idx = current_page + offset;
-            if idx >= 0 && idx < total && !self.texture_cache.contains_key(&idx) {
+            if idx >= 0 && idx < self.total_pages && !self.texture_cache.contains_key(&idx) {
                 self.ensure_texture_loaded(ctx, idx);
             }
         }
     }
 }
 
-impl Viewer for ComicViewer {
+impl Drop for CbrViewer {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.temp_dir);
+    }
+}
+
+impl Viewer for CbrViewer {
     fn next_page(&mut self) {
         if self.page_num < self.total_pages - 1 {
             self.page_num += 1;

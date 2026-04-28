@@ -4,6 +4,23 @@ use poppler::Document;
 
 use crate::viewer::Viewer;
 
+/// Encode special characters in file path for URI
+/// Especially handles: #, spaces, etc.
+fn encode_file_path(path: &str) -> String {
+    let mut encoded = String::new();
+    for c in path.chars() {
+        match c {
+            '#' => encoded.push_str("%23"),
+            '%' => encoded.push_str("%25"),
+            ' ' => encoded.push_str("%20"),
+            '(' => encoded.push_str("%28"),
+            ')' => encoded.push_str("%29"),
+            _ => encoded.push(c),
+        }
+    }
+    encoded
+}
+
 pub struct PdfViewer {
     doc: Document,
     page_num: i32,
@@ -17,30 +34,27 @@ pub struct PdfViewer {
     pending_zoom: f32,
     is_dirty: bool,
     error_message: Option<String>,
+    page_input: String,
 }
 
 impl PdfViewer {
     pub fn new(file_path: &str) -> Option<Self> {
-        let file_uri = if file_path.starts_with("file://") {
-            file_path.to_string()
+        // Strip file:// prefix if present
+        let path_str = if file_path.starts_with("file://") {
+            file_path.strip_prefix("file://").unwrap_or(file_path)
         } else {
-            format!("file://{}", file_path)
+            file_path
         };
 
+        // Encode special characters for URI (especially #)
+        let file_uri = format!("file://{}", encode_file_path(path_str));
         let doc = Document::from_file(&file_uri, None).ok()?;
 
         if doc.n_pages() == 0 {
             return None;
         }
 
-        let file_path_str = if file_path.starts_with("file://") {
-            file_path
-                .strip_prefix("file://")
-                .unwrap_or(file_path)
-                .to_string()
-        } else {
-            file_path.to_string()
-        };
+        let file_path_str = path_str.to_string();
 
         let file_name = std::path::Path::new(&file_path_str)
             .file_name()
@@ -59,8 +73,9 @@ impl PdfViewer {
             pending_page: 0,
             pending_zoom: 1.0,
             is_dirty: true,
-            error_message: None,
-        };
+    error_message: None,
+    page_input: String::new(),
+};
 
         viewer.render_page_sync();
         Some(viewer)
@@ -187,35 +202,13 @@ impl PdfViewer {
         Some((width, height, should_rebuild))
     }
 
-    pub fn render(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) -> bool {
-        let mut go_back = false;
+    fn render(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) -> bool {
+        let (go_back, page_input) = crate::viewer::render_navigation_bar(ui, self);
+        self.page_input = page_input;
 
-        ui.horizontal(|ui| {
-            if ui.button("Abrir archivo").clicked() {
-                go_back = true;
-            }
-            ui.add_space(10.0);
-
-            if ui.button("Ant.").clicked() {
-                self.prev_page();
-            }
-            ui.label(format!(
-                "Pagina {} / {}",
-                self.current_page() + 1,
-                self.total_pages()
-            ));
-            if ui.button("Sig.").clicked() {
-                self.next_page();
-            }
-            ui.add_space(20.0);
-            if ui.button("-").clicked() {
-                self.zoom_out();
-            }
-            ui.label(format!("{}%", self.zoom_percent()));
-            if ui.button("+").clicked() {
-                self.zoom_in();
-            }
-        });
+        if let Some(ref err) = self.error_message {
+            ui.label(err);
+        }
 
         ui.separator();
 
@@ -228,7 +221,8 @@ impl PdfViewer {
             None => ((800, 1200), false),
         };
 
-        if should_rebuild && !self.is_dirty {
+        // Rebuild texture if needed or if zoom changed (is_dirty is true)
+        if should_rebuild || self.is_dirty {
             if let Some(surface) = &mut self.surface {
                 if let Ok(data) = surface.data() {
                     let mut bytes = data.to_vec();
@@ -241,38 +235,34 @@ impl PdfViewer {
             }
         }
 
-        let scroll_size = egui::vec2(dims.0 as f32, dims.1 as f32);
+        // Apply zoom to display size
+        let display_w = (dims.0 as f32 * self.zoom) as usize;
+        let display_h = (dims.1 as f32 * self.zoom) as usize;
+        let scroll_size = egui::vec2(display_w as f32, display_h as f32);
 
         if let Some(ref texture) = self.texture {
             egui::ScrollArea::new([true, true]).show(ui, |ui: &mut egui::Ui| {
                 ui.set_min_size(scroll_size);
                 ui.add(egui::Image::new(texture).max_size(scroll_size));
+
+                // Scroll with arrow keys (same as mouse wheel)
+                let mut scroll_delta = egui::Vec2::ZERO;
+                if ui.input(|i| i.key_down(egui::Key::ArrowDown)) {
+                    scroll_delta.y -= 15.0;  // Scroll down = content moves up
+                }
+                if ui.input(|i| i.key_down(egui::Key::ArrowUp)) {
+                    scroll_delta.y += 15.0;  // Scroll up = content moves down
+                }
+                if scroll_delta != egui::Vec2::ZERO {
+                    ui.scroll_with_delta(scroll_delta);
+                }
             });
-        } else if let Some(ref err) = self.error_message {
-            ui.label(err);
         } else if self.is_dirty {
             ui.spinner();
             ui.label("Cargando...");
         }
 
-        if ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
-            self.prev_page();
-        }
-        if ui.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
-            self.next_page();
-        }
-        if ui.input(|i| i.key_pressed(egui::Key::Plus))
-            || ui.input(|i| i.key_pressed(egui::Key::Equals))
-        {
-            self.zoom_in();
-        }
-        if ui.input(|i| i.key_pressed(egui::Key::Minus)) {
-            self.zoom_out();
-        }
-
-        if ui.input(|i| i.key_pressed(egui::Key::Q)) {
-            go_back = true;
-        }
+        let go_back = crate::viewer::handle_keyboard_shortcuts(ui, self) || go_back;
 
         go_back
     }
@@ -317,5 +307,11 @@ impl Viewer for PdfViewer {
     }
     fn get_file_name(&self) -> &str {
         &self.file_name
+    }
+    fn take_page_input(&mut self) -> String {
+        std::mem::take(&mut self.page_input)
+    }
+    fn set_error_message(&mut self, msg: Option<String>) {
+        self.error_message = msg;
     }
 }

@@ -17,3 +17,6 @@ Thumbs.db
 
 # Debug
 *.log
+
+# Temp extract directory
+temp_extract/
