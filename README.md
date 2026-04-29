@@ -1,6 +1,6 @@
 # Lector Manga/Comic
 
-Un lector de PDFs, CBZ, CBR para cómics/mangas, construido con Rust y el framework eframe/egui, diseñado para lectura de manga y comics en distros basadas en Arch.
+Un lector de PDF, CBZ, CBR para cómics/mangas, construido con Rust y el framework eframe/egui, diseñado para lectura de manga y comics en distros basadas en Arch.
 
 ![Lector Manga/Comic](icons/lector.png)
 
@@ -23,26 +23,39 @@ Un lector de PDFs, CBZ, CBR para cómics/mangas, construido con Rust y el framew
 - Rust (si compilás desde código fuente)
 
 ### Método 1: Binario precompilado
-
+Descarga el binario de Releases y ejecutá:
 ```bash
-# Descarga el binario de Releases y ejecutá:
 sudo cp lector-pdf /usr/local/bin/lector
+```
+dar permisos:
+```bash
 sudo chmod +x /usr/local/bin/lector
+```
+se lanza desde terminal: 
+```bash
 lector
 ```
 
 ### Método 2: Compilación desde código fuente
-
+Clonar el repositorio
 ```bash
-# Clonar el repositorio
 git clone https://github.com/Brextal/Lector-Manga-Comic.git
+```
+Ir a directorio Lector-Manga-Comic
+```bash
 cd Lector-Manga-Comic
+```
 
-# Compilar
+### Compilar
+```bash
 cargo build --release
-
+```
 # Instalar
+```bash
 sudo cp target/release/lector-pdf /usr/local/bin/lector
+```
+dar permisos
+```bash
 sudo chmod +x /usr/local/bin/lector
 ```
 
